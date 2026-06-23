@@ -1,0 +1,80 @@
+# OpenTelemetry Collector config — receives OTLP from Claude Code and ships
+# everything to Elasticsearch using the native OTel mapping mode (data streams:
+# logs-*.otel-*, metrics-*.otel-*, traces-*.otel-*).
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Small batches + short timeout so the demo feels live.
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+  resourcedetection:
+    detectors: [env, system]
+    timeout: 5s
+    override: false
+  # Set data_stream.dataset because Claude Code filters `data_stream.*`
+  # out of OTEL_RESOURCE_ATTRIBUTES, so the app can't.
+  resource/dataset:
+    attributes:
+      - key: data_stream.dataset
+        value: claude-code
+        action: upsert
+  # ES exporter v0.119 quirk: for logs/traces it reads data_stream.dataset
+  # only from RECORD/SPAN attributes, not Resource. So we also have to copy
+  # the same value down onto each log record and each span. (Metrics works
+  # off Resource directly — that's why metrics already routed correctly.)
+  attributes/dataset:
+    actions:
+      - key: data_stream.dataset
+        value: claude-code
+        action: upsert
+
+exporters:
+  elasticsearch:
+    endpoints: ["http://elasticsearch:9200"]
+    mapping:
+      mode: otel
+    flush:
+      interval: 5s
+    retry:
+      enabled: true
+      max_retries: 5
+  # Fan traces out to Jaeger as well — Kibana for aggregates, Jaeger for the
+  # per-trace waterfall view. Same collector, two destinations.
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+  # Mirror everything to collector stdout — handy for `docker logs`.
+  debug:
+    verbosity: normal
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  telemetry:
+    logs:
+      level: info
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [resourcedetection, batch]
+      exporters: [elasticsearch, debug]
+    logs:
+      receivers: [otlp]
+      processors: [resourcedetection, batch]
+      exporters: [elasticsearch, debug]
+    traces:
+      receivers: [otlp]
+      processors: [resourcedetection, batch]
+      exporters: [elasticsearch, otlp/jaeger, debug]

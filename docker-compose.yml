@@ -1,0 +1,107 @@
+name: claude-otel
+
+# Claude Code  →  OTLP  →  OpenTelemetry Collector  →  Elasticsearch  →  Kibana
+#
+# Signals captured: metrics (cost/tokens/sessions/...), logs (events such as
+# user_prompt / tool_result / api_request), and traces (beta).
+
+services:
+  # ---------------------------------------------------------------------------
+  # Elasticsearch — single-node, security disabled (DEMO ONLY).
+  # ---------------------------------------------------------------------------
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.0
+    container_name: claude-otel-es
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.http.ssl.enabled=false
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+      - bootstrap.memory_lock=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    ports:
+      - "9200:9200"
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
+      interval: 10s
+      timeout: 10s
+      retries: 18
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # Kibana — UI at http://localhost:5601 (Discover → logs-* / metrics-* / traces-*).
+  # ---------------------------------------------------------------------------
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.17.0
+    container_name: claude-otel-kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:5601/api/status | grep -q '\"level\":\"available\"'"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 40s
+
+  # ---------------------------------------------------------------------------
+  # Jaeger — single-binary "all-in-one" with OTLP receiver and in-memory storage.
+  # UI on :16686 shows the per-trace waterfall (which Kibana doesn't render well).
+  # The Collector fans traces out to both ES (for aggregates) and Jaeger (for
+  # single-trace inspection). Storage is in-memory → restarting wipes traces.
+  # ---------------------------------------------------------------------------
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    container_name: claude-otel-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true   # listen for OTLP on 4317/4318
+    ports:
+      - "16686:16686"                  # Jaeger UI
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # OpenTelemetry Collector — OTLP in (4317 grpc / 4318 http), Elasticsearch out.
+  # ---------------------------------------------------------------------------
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.135.0
+    container_name: claude-otel-collector
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./otel/collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317"    # OTLP gRPC  (Claude Code default endpoint)
+      - "4318:4318"    # OTLP HTTP
+      - "13133:13133"  # health_check extension
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # One-shot: create Kibana data views so signals are visible immediately.
+  # ---------------------------------------------------------------------------
+  kibana-setup:
+    image: curlimages/curl:8.11.0
+    container_name: claude-otel-kibana-setup
+    depends_on:
+      kibana:
+        condition: service_healthy
+    volumes:
+      - ./scripts/setup-kibana.sh:/setup.sh:ro
+      - ./kibana:/kibana:ro
+    entrypoint: ["sh", "/setup.sh"]
+    restart: "no"
+
+volumes:
+  es-data:

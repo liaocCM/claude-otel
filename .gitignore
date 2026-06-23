@@ -1,0 +1,29 @@
+# --- Node / Vite (observability-explainer) ----------------------------------
+node_modules/
+dist/
+.vite/
+*.log
+npm-debug.log*
+
+# Vite's local-only env override convention. The committed `claude-code.env`
+# files ARE meant to be tracked — they're the demo config, not secrets.
+*.env.local
+*.env.*.local
+
+# --- Python -----------------------------------------------------------------
+__pycache__/
+*.pyc
+
+# --- Editors / OS -----------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# --- Local docker / data volumes (if ever bind-mounted instead of named) ----
+es-data/
+tempo-data/
+loki-data/
+prometheus-data/

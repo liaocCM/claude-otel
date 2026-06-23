@@ -1,0 +1,105 @@
+name: claude-otel-grafana
+
+# Alternative observability stack for Claude Code, using the Grafana "LGTM"
+# ecosystem (Loki/Grafana/Tempo + Prometheus instead of Mimir). Runs alongside
+# the main ES+Kibana stack on different ports.
+#
+# Claude Code (CLI) ──OTLP─▶ Collector ─┬─▶ Tempo       (traces)
+#                                       ├─▶ Loki        (logs)
+#                                       └─▶ Prometheus  (metrics, OTLP receiver)
+#                                                ↓
+#                                            Grafana    (single UI :13000)
+
+services:
+  # ---------------------------------------------------------------------------
+  # OTel Collector — listens on 14317/14318 (so it doesn't clash with the
+  # ES stack's 4317/4318). Fans out to three backends.
+  # ---------------------------------------------------------------------------
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.135.0
+    container_name: gs-collector
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./otel/collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "14317:4317"
+      - "14318:4318"
+    depends_on:
+      - tempo
+      - loki
+      - prometheus
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Tempo — distributed tracing backend. Local filesystem storage (demo).
+  # ---------------------------------------------------------------------------
+  tempo:
+    image: grafana/tempo:2.6.1
+    container_name: gs-tempo
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "13200:3200"   # tempo query API (used by Grafana)
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Loki — logs backend. Filesystem TSDB (demo).
+  # ---------------------------------------------------------------------------
+  loki:
+    image: grafana/loki:3.3.2
+    container_name: gs-loki
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    volumes:
+      - ./loki/loki-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    ports:
+      - "13100:3100"
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Prometheus — metrics. Uses its built-in OTLP receiver (≥ v2.47).
+  # Enabled by --web.enable-otlp-receiver.
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    container_name: gs-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --web.enable-otlp-receiver
+      - --web.enable-remote-write-receiver
+      - --enable-feature=exemplar-storage
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prom-data:/prometheus
+    ports:
+      - "19090:9090"
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Grafana — the one UI. Datasources + an example dashboard pre-provisioned.
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: gs-grafana
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_FEATURE_TOGGLES_ENABLE=traceqlEditor
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "13000:3000"
+    depends_on:
+      - tempo
+      - loki
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  tempo-data:
+  loki-data:
+  prom-data:
