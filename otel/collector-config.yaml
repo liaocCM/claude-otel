@@ -19,21 +19,21 @@ processors:
     detectors: [env, system]
     timeout: 5s
     override: false
-  # Set data_stream.dataset because Claude Code filters `data_stream.*`
-  # out of OTEL_RESOURCE_ATTRIBUTES, so the app can't.
+  # Force every signal to dataset=claude_code (underscore — matches Claude Code's
+  # native emission for some events, and Elastic's dataset naming convention).
+  # Without this, tool_result/tool_decision events sometimes leak to
+  # `*-generic.otel-default`, missing our custom mappings.
   resource/dataset:
     attributes:
       - key: data_stream.dataset
-        value: claude-code
+        value: claude_code
         action: upsert
-  # ES exporter v0.119 quirk: for logs/traces it reads data_stream.dataset
-  # only from RECORD/SPAN attributes, not Resource. So we also have to copy
-  # the same value down onto each log record and each span. (Metrics works
-  # off Resource directly — that's why metrics already routed correctly.)
+  # ES exporter quirk: for logs/traces it reads data_stream.dataset from
+  # RECORD/SPAN attributes, not Resource. Copy it down onto every record/span.
   attributes/dataset:
     actions:
       - key: data_stream.dataset
-        value: claude-code
+        value: claude_code
         action: upsert
 
 exporters:
@@ -68,13 +68,13 @@ service:
   pipelines:
     metrics:
       receivers: [otlp]
-      processors: [resourcedetection, batch]
+      processors: [resourcedetection, resource/dataset, attributes/dataset, batch]
       exporters: [elasticsearch, debug]
     logs:
       receivers: [otlp]
-      processors: [resourcedetection, batch]
+      processors: [resourcedetection, resource/dataset, attributes/dataset, batch]
       exporters: [elasticsearch, debug]
     traces:
       receivers: [otlp]
-      processors: [resourcedetection, batch]
+      processors: [resourcedetection, resource/dataset, attributes/dataset, batch]
       exporters: [elasticsearch, otlp/jaeger, debug]

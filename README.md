@@ -85,6 +85,7 @@ curl -s 'localhost:9200/_cat/indices/logs-*,metrics-*,traces-*?v'
 | `claude-code.env`                  | env vars to enable Claude Code telemetry        |
 | `docs/signals-reference.md`        | what Claude Code emits (metrics / events / traces), verified vs. live data |
 | `docs/admin-rollout-guide.md`      | rollout guide for shipping this to a team plan |
+| `docs/es-upgrade-8.14-to-8.17.md`  | runbook for upgrading an older ES (8.14.x) cluster to a fully OTel-supported version |
 | `observability-explainer/`         | Vite + React Flow app diagramming **both** stacks — tab toggle switches ES ↔ Grafana view |
 | `grafana-stack/`                   | alternative compose: Tempo + Loki + Prometheus + Grafana, on offset ports — see its [README](grafana-stack/README.md) |
 

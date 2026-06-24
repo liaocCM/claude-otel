@@ -38,11 +38,12 @@ Claude Code ──:14317──▶ OTel Coll ─┼─▶ Loki        (logs)    �
 | `docker-compose.yml` | The whole stack — ES 8.17, Kibana 8.17, OTel Collector 0.135, Jaeger 1.62 |
 | `otel/collector-config.yaml` | OTLP receivers, ES exporter with `mapping.mode: otel` |
 | `claude-code.env` | Env vars to enable Claude Code telemetry — `source` it before running `claude` |
-| `scripts/setup-kibana.sh` | One-shot: registers traces template, creates data views, imports dashboard |
+| `scripts/setup-kibana.sh` | One-shot: registers traces template + Claude Code attribute mappings/pipeline, creates data views, imports dashboard |
 | `kibana/claude-code-dashboard.ndjson` | Pre-built "Claude Code · Overview" dashboard (13 panels incl. trace row) |
 | `kibana/build-dashboard.py` | Regenerator for the dashboard NDJSON |
 | `docs/signals-reference.md` | Authoritative reference for what Claude Code emits |
 | `docs/admin-rollout-guide.md` | Practical guide for rolling out to a team plan |
+| `docs/es-upgrade-8.14-to-8.17.md` | Pragmatic runbook for upgrading older ES clusters that lack full OTel template support |
 | `observability-explainer/` | React Flow app diagramming **both** stacks — tab toggle in header switches ES ↔ Grafana view (built by Claude Code) |
 | `grafana-stack/` | Alternative LGTM stack — Tempo / Loki / Prometheus / Grafana on offset ports (14317 / 13000 / 13100 / 13200 / 19090). See its `README.md`. |
 
@@ -52,7 +53,7 @@ Claude Code ──:14317──▶ OTel Coll ─┼─▶ Loki        (logs)    �
 
 2. **Vanilla ES has NO `traces-*-*` catch-all template.** Built-in `traces-otel@template` only matches `traces-*.otel-*`. Either route traces to a `*.otel-*` data stream (preferred, achieved by upgrading to exporter 0.135+), or add a custom template (last resort).
 
-3. **Claude Code strips `data_stream.*` from `OTEL_RESOURCE_ATTRIBUTES`.** You cannot brand routing from the app side. Other attributes pass through fine. To brand from collector side, use a `resource` or `transform` processor.
+3. **Claude Code strips `data_stream.*` from `OTEL_RESOURCE_ATTRIBUTES`.** You cannot brand routing from the app side. Other attributes pass through fine. **Newer Claude Code (≥ 2.1.186) sets `data_stream.dataset=claude_code` natively on _some_ events (api_request) but not others (tool_result, tool_decision)** — so routing is inconsistent without help. Our collector wires `resource/dataset` + `attributes/dataset` upserts into all 3 pipelines to force everything to `claude_code` (underscore — Elastic dataset naming convention).
 
 4. **Two attribute layers — they're NOT the same.**
    - `resource.attributes.*` — per-process (service.name, host.name)
@@ -60,6 +61,12 @@ Claude Code ──:14317──▶ OTel Coll ─┼─▶ Loki        (logs)    �
    - A KQL of `resource.attributes.user.email` returns 0 silently because user.email lives on records.
 
 5. **Span name `attributes.tool_name` is `keyword` under built-in templates** — no `.keyword` suffix needed. (My earlier custom template made it `text` with a `.keyword` multi-field; that's gone now.)
+
+5a. **Many Claude Code attributes are emitted as OTLP _string_ values even when semantically numeric/boolean** — e.g. `success="true"`, `tool_result_size_bytes="12"`, `duration_ms="28"` (on tool_result events; api_request sends them as numbers). Without help, ES dynamic mapping makes them all `keyword`, so `sum`/`avg`/boolean queries error or return 0. `scripts/setup-kibana.sh` registers `claude-code-attributes@mappings` to force types. This mirrors the Elastic Security Labs guide (https://www.elastic.co/security-labs/claude-code-cowork-monitoring-otel-elastic).
+
+5b. **`tool_input` / `tool_parameters` arrive as stringified JSON** (`"{\"command\":\"ls\",...}"`), not nested objects. `claude-code-attributes@pipeline` JSON-parses them into `attributes.tool_input_flattened` / `tool_parameters_flattened` (type `flattened`), keeping the raw string intact. Without it, `tool_input.command` queries return 0 even when the command is in the data.
+
+5c. **`ecs@mappings` has an `all_strings_to_keywords` dynamic_template that catches strings before any path-based rule.** Custom dynamic_templates that need to override types for string-valued attributes MUST be `composed_of`'d **before** `ecs@mappings` — otherwise they never get evaluated. Took two rollovers to figure out.
 
 6. **Mapping changes apply to FUTURE backing indices only.** To apply now: `POST <data_stream>/_rollover`.
 
@@ -73,10 +80,11 @@ Claude Code ──:14317──▶ OTel Coll ─┼─▶ Loki        (logs)    �
 
 ## Conventions
 
-- Data streams currently land at `<type>-generic.otel-default` (no `data_stream.dataset` set on the resource). All three match built-in `<type>-otel@template`.
+- Data streams land at `<type>-claude_code.otel-default` (collector upserts `data_stream.dataset=claude_code` on both resource and record attributes). Logs match our higher-priority `logs-claude_code.otel-custom` template (priority 200) which includes the custom attribute mappings; metrics/traces match built-in `<type>-otel@template`.
 - `service.name="claude-code"` is hardcoded by Claude Code — safe to use as a routing/filtering predicate.
 - `service.namespace="claude-code-demo"` is set via env — that's the filter to isolate demo data from anything else in the same ES.
 - Privacy flags are intentionally ON in `claude-code.env` (`OTEL_LOG_USER_PROMPTS=1`, `OTEL_LOG_TOOL_DETAILS=1`). Don't enable these without policy review in real rollouts.
+- **Cost field choice**: prefer `attributes.cost_usd_micros` (long, integer micro-USD) over `attributes.cost_usd` (float) for aggregation — no precision concerns, both are emitted on every `api_request` event.
 
 ## How to run
 
