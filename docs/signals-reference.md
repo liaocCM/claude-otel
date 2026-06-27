@@ -88,7 +88,7 @@ Key span attributes:
 - `tool`: `tool_name`, `duration_ms`, `file_path` (Read/Edit/Write), `full_command` (Bash)
 
 > ES needs a `traces-*` data-stream template (it ships ones for `logs-*` /
-> `metrics-*` but not traces) — registered by `scripts/setup-kibana.sh`.
+> `metrics-*` but not traces) — registered by `es-stack/scripts/setup-kibana.sh`.
 
 ---
 

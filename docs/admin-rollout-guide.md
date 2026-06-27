@@ -103,7 +103,7 @@ Kibana           — data view wildcard matches across all backing indices.
       - "Recent api_request failures"
       - "Slow interactions (>30s)"
 - [ ] Kibana **dashboard**: cost / token / sessions / lines_of_code
-      (the demo's `kibana/claude-code-dashboard.ndjson` is a starting point).
+      (the demo's `es-stack/kibana/claude-code-dashboard.ndjson` is a starting point).
 - [ ] Confirm built-in OTel templates are present:
       `GET _index_template/metrics-otel@template` etc. → 200.
 

@@ -91,7 +91,7 @@ diff <(jq -S . /tmp/metrics-otel-before.json) \
 # expect: meaningful diffs — Elastic's new template won, not yours
 
 # (c) send a real signal and confirm the data stream is .otel-flavored
-source ../claude-code.env && claude -p "hello"
+source ../es-stack/claude-code.env && claude -p "hello"
 curl -s ':9200/_cat/indices/*.otel-*?v'
 ```
 

@@ -22,7 +22,7 @@ Claude Code ──:14317──▶ OTel Coll ─┼─▶ Loki        (logs)    �
                   └─▶ Prometheus  (metrics) ─┘
 ```
 
-- **ES stack** (root `docker-compose.yml`): Collector fans **traces** to both ES
+- **ES stack** (`es-stack/docker-compose.yml`): Collector fans **traces** to both ES
   (cross-trace aggregates) and Jaeger (per-trace waterfall, Kibana doesn't render
   well). Logs/metrics → ES only.
 - **Grafana stack** (`grafana-stack/docker-compose.yml`): traces → Tempo, logs →
@@ -35,12 +35,12 @@ Claude Code ──:14317──▶ OTel Coll ─┼─▶ Loki        (logs)    �
 
 | Path | Purpose |
 |---|---|
-| `docker-compose.yml` | The whole stack — ES 8.17, Kibana 8.17, OTel Collector 0.135, Jaeger 1.62 |
-| `otel/collector-config.yaml` | OTLP receivers, ES exporter with `mapping.mode: otel` |
-| `claude-code.env` | Env vars to enable Claude Code telemetry — `source` it before running `claude` |
-| `scripts/setup-kibana.sh` | One-shot: registers traces template + Claude Code attribute mappings/pipeline, creates data views, imports dashboard |
-| `kibana/claude-code-dashboard.ndjson` | Pre-built "Claude Code · Overview" dashboard (13 panels incl. trace row) |
-| `kibana/build-dashboard.py` | Regenerator for the dashboard NDJSON |
+| `es-stack/docker-compose.yml` | The whole stack — ES 8.17, Kibana 8.17, OTel Collector 0.135, Jaeger 1.62 |
+| `es-stack/otel/collector-config.yaml` | OTLP receivers, ES exporter with `mapping.mode: otel` |
+| `es-stack/claude-code.env` | Env vars to enable Claude Code telemetry — `source` it before running `claude` |
+| `es-stack/scripts/setup-kibana.sh` | One-shot: registers traces template + Claude Code attribute mappings/pipeline, creates data views, imports dashboard |
+| `es-stack/kibana/claude-code-dashboard.ndjson` | Pre-built "Claude Code · Overview" dashboard (13 panels incl. trace row) |
+| `es-stack/kibana/build-dashboard.py` | Regenerator for the dashboard NDJSON |
 | `docs/signals-reference.md` | Authoritative reference for what Claude Code emits |
 | `docs/admin-rollout-guide.md` | Practical guide for rolling out to a team plan |
 | `docs/es-upgrade-8.14-to-8.17.md` | Pragmatic runbook for upgrading older ES clusters that lack full OTel template support |
@@ -62,7 +62,7 @@ Claude Code ──:14317──▶ OTel Coll ─┼─▶ Loki        (logs)    �
 
 5. **Span name `attributes.tool_name` is `keyword` under built-in templates** — no `.keyword` suffix needed. (My earlier custom template made it `text` with a `.keyword` multi-field; that's gone now.)
 
-5a. **Many Claude Code attributes are emitted as OTLP _string_ values even when semantically numeric/boolean** — e.g. `success="true"`, `tool_result_size_bytes="12"`, `duration_ms="28"` (on tool_result events; api_request sends them as numbers). Without help, ES dynamic mapping makes them all `keyword`, so `sum`/`avg`/boolean queries error or return 0. `scripts/setup-kibana.sh` registers `claude-code-attributes@mappings` to force types. This mirrors the Elastic Security Labs guide (https://www.elastic.co/security-labs/claude-code-cowork-monitoring-otel-elastic).
+5a. **Many Claude Code attributes are emitted as OTLP _string_ values even when semantically numeric/boolean** — e.g. `success="true"`, `tool_result_size_bytes="12"`, `duration_ms="28"` (on tool_result events; api_request sends them as numbers). Without help, ES dynamic mapping makes them all `keyword`, so `sum`/`avg`/boolean queries error or return 0. `es-stack/scripts/setup-kibana.sh` registers `claude-code-attributes@mappings` to force types. This mirrors the Elastic Security Labs guide (https://www.elastic.co/security-labs/claude-code-cowork-monitoring-otel-elastic).
 
 5b. **`tool_input` / `tool_parameters` arrive as stringified JSON** (`"{\"command\":\"ls\",...}"`), not nested objects. `claude-code-attributes@pipeline` JSON-parses them into `attributes.tool_input_flattened` / `tool_parameters_flattened` (type `flattened`), keeping the raw string intact. Without it, `tool_input.command` queries return 0 even when the command is in the data.
 
@@ -83,15 +83,15 @@ Claude Code ──:14317──▶ OTel Coll ─┼─▶ Loki        (logs)    �
 - Data streams land at `<type>-claude_code.otel-default` (collector upserts `data_stream.dataset=claude_code` on both resource and record attributes). Logs match our higher-priority `logs-claude_code.otel-custom` template (priority 200) which includes the custom attribute mappings; metrics/traces match built-in `<type>-otel@template`.
 - `service.name="claude-code"` is hardcoded by Claude Code — safe to use as a routing/filtering predicate.
 - `service.namespace="claude-code-demo"` is set via env — that's the filter to isolate demo data from anything else in the same ES.
-- Privacy flags are intentionally ON in `claude-code.env` (`OTEL_LOG_USER_PROMPTS=1`, `OTEL_LOG_TOOL_DETAILS=1`). Don't enable these without policy review in real rollouts.
+- Privacy flags are intentionally ON in `es-stack/claude-code.env` (`OTEL_LOG_USER_PROMPTS=1`, `OTEL_LOG_TOOL_DETAILS=1`). Don't enable these without policy review in real rollouts.
 - **Cost field choice**: prefer `attributes.cost_usd_micros` (long, integer micro-USD) over `attributes.cost_usd` (float) for aggregation — no precision concerns, both are emitted on every `api_request` event.
 
 ## How to run
 
 ES stack (default):
 ```bash
-docker compose up -d                # start the stack
-source claude-code.env              # in the shell that runs claude
+cd es-stack && docker compose up -d   # start the stack
+source claude-code.env                # in the shell that runs claude
 claude -p "what is OTel?"           # generate telemetry
 # → http://localhost:5601 → Dashboards → "Claude Code · Overview"
 # → http://localhost:16686 for Jaeger waterfall
@@ -133,10 +133,10 @@ docker run --rm otel/opentelemetry-collector-contrib:<tag> --version
 
 ## When changing things
 
-- **Editing `otel/collector-config.yaml`** or `grafana-stack/otel/collector-config.yaml` → `docker compose restart otel-collector` in that dir (volume-mounted, no rebuild needed).
-- **Editing `claude-code.env`** / `grafana-stack/claude-code-grafana.env` → re-`source` it before the next `claude` invocation.
-- **Editing the dashboard** → regenerate via `python3 kibana/build-dashboard.py`, then `docker compose run --rm kibana-setup` to re-import.
-- **Editing `docker-compose.yml`** → `docker compose up -d` to recreate changed services.
+- **Editing `es-stack/otel/collector-config.yaml`** or `grafana-stack/otel/collector-config.yaml` → `docker compose restart otel-collector` in that dir (volume-mounted, no rebuild needed).
+- **Editing `es-stack/claude-code.env`** / `grafana-stack/claude-code-grafana.env` → re-`source` it before the next `claude` invocation.
+- **Editing the dashboard** → regenerate via `python3 es-stack/kibana/build-dashboard.py`, then `docker compose -f es-stack/docker-compose.yml run --rm kibana-setup` to re-import.
+- **Editing `es-stack/docker-compose.yml`** → `docker compose -f es-stack/docker-compose.yml up -d` to recreate changed services.
 - **Editing the explainer frontend** (`observability-explainer/src/*`) → Vite container has HMR, no restart needed. For prod build: `docker exec claude-otel-explainer npm run build`.
 
 ## What this demo deliberately does NOT have

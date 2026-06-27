@@ -60,6 +60,7 @@ Each path below shows what those signals look like in its UI.
 ### Run it
 
 ```bash
+cd es-stack
 docker compose up -d            # ~1 min on first boot
 source claude-code.env          # → OTLP to localhost:4317
 claude -p 'Run the bash command "echo hello-from-readme" and confirm what it printed.'
@@ -165,7 +166,7 @@ pre-wired in provisioning, is the Grafana stack's signature feature.
 | **Trade-off** | Two UIs (Kibana + Jaeger), Lucene-shaped query languages | Loki full-text is label-bounded, Prometheus rejects DELTA without the processor |
 
 Both consume the **same** OTLP from Claude Code — only the env file
-(`claude-code.env` vs `grafana-stack/claude-code-grafana.env`) and the
+(`es-stack/claude-code.env` vs `grafana-stack/claude-code-grafana.env`) and the
 receiver port change.
 
 ---
@@ -176,7 +177,7 @@ receiver port change.
   off, no TLS, in-memory Jaeger. For team rollout (auth, multi-tenancy, ILM,
   MDM-managed env) see
   [`docs/admin-rollout-guide.md`](docs/admin-rollout-guide.md).
-- **Privacy.** `claude-code.env` opts into `OTEL_LOG_USER_PROMPTS=1` and
+- **Privacy.** `es-stack/claude-code.env` opts into `OTEL_LOG_USER_PROMPTS=1` and
   `OTEL_LOG_TOOL_DETAILS=1` — prompts, tool commands, and tool args are
   captured verbatim. Comment those two lines out if your policy says no.
 - **Teardown.** `docker compose down -v` (the `-v` also drops the ES volume).
