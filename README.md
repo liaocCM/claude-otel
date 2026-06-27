@@ -1,31 +1,27 @@
 # Claude Code observability — Elastic or Grafana
 
 Pre-wired OpenTelemetry pipeline for Claude Code, with two interchangeable
-backends in one repo: **Elasticsearch + Kibana + Jaeger** or **Grafana LGTM**
-(Tempo + Loki + Prometheus). Pick a stack, `docker compose up`, point Claude
-Code at it.
+backends in one repo. Same telemetry, two completely different UI experiences —
+pick the one that fits your team:
 
-What lands in Elastic, end-to-end:
+- **Elasticsearch + Kibana + Jaeger** — battle-tested aggregations, full-text
+  log search, Jaeger for trace waterfalls.
+- **Grafana LGTM** — Tempo + Loki + Prometheus, single UI, one-click jumps
+  between signals.
 
-![Discover · Logs](docs/images/discover-logs.png)
-> One typed document per Claude Code event — `api_request`, `tool_result`,
-> `tool_decision`, `user_prompt`, `api_error`. `success` is a real boolean,
-> `duration_ms` / `cost_usd_micros` are real numbers, `tool_input` JSON is
-> parsed into `tool_input_flattened.command` — all queryable without coercion.
+Both compose files live in this repo on **offset ports** — you can run them
+side-by-side and compare.
 
-![Discover · Metrics](docs/images/discover-metrics.png)
-> Token usage split by model + type (input / output / cacheRead /
-> cacheCreation), USD cost, active time. Each row is a `(metric, dimensions,
-> value)` tuple — drop straight into Lens.
+## Contents
 
-![Discover · Traces](docs/images/discover-traces.png)
-> The full span tree per prompt: `claude_code.interaction → llm_request +
-> tool → tool.execution`. Every span carries `trace_id`, `duration`, and the
-> attribute set you need to attribute work to a user / model / tool.
-
-![Jaeger · trace waterfall](docs/images/jaeger-trace.png)
-> Click any `trace_id` into Jaeger for the critical path. Above: two parallel
-> `llm_request` spans dominate a 4.55 s prompt; tool execution is ~30 ms.
+- [Pick a stack](#pick-a-stack)
+- [The walkthrough](#the-walkthrough)
+- [Path A — Elasticsearch + Kibana + Jaeger](#path-a--elasticsearch--kibana--jaeger)
+- [Path B — Grafana LGTM](#path-b--grafana-lgtm)
+- [Side-by-side](#side-by-side)
+- [Caveats](#caveats)
+- [Architecture](#architecture)
+- [Reference](#reference)
 
 ---
 
@@ -37,52 +33,149 @@ What lands in Elastic, end-to-end:
 | Single UI with one-click jumps between logs / metrics / traces, cheaper at scale | **Grafana LGTM** | Tempo + Loki + Prometheus, correlations pre-wired |
 | Both, for side-by-side comparison | Run both | Ports are offset, no conflict |
 
-Both consume the **same** OTLP — only the receiver port and env file change.
+---
+
+## The walkthrough
+
+Everything below comes from running the **same prompt** against each stack:
+
+```bash
+claude -p 'Run the bash command "echo hello-from-readme" and confirm what it printed.'
+```
+
+That single prompt produces:
+
+- **10 events** — `user_prompt` → `api_request` → `tool_decision` → `tool_result` → `api_request` → `assistant_response`
+- **7 spans** in one trace — `claude_code.interaction` → 3× `claude_code.llm_request` + `claude_code.tool` → `tool.blocked_on_user` + `tool.execution`
+- Token-usage metric samples per model / type and a USD cost sample
+
+Each path below shows what those signals look like in its UI.
 
 ---
 
 ## Path A — Elasticsearch + Kibana + Jaeger
 
+![ES architecture](docs/images/explainer-es-stack.png)
+
+### Run it
+
 ```bash
-docker compose up -d                  # ~1 min on first boot
-source claude-code.env
-claude -p "what is OTel?"             # generate some telemetry
+docker compose up -d            # ~1 min on first boot
+source claude-code.env          # → OTLP to localhost:4317
+claude -p 'Run the bash command "echo hello-from-readme" and confirm what it printed.'
 ```
 
-Then:
+A one-shot `kibana-setup` container registers the traces template,
+`claude-code-attributes@mappings` (typed numeric / boolean / flattened columns),
+the JSON-parse ingest pipeline, and imports the dashboard. Without it,
+`tool_input.command` queries return zero and `sum(duration_ms)` errors —
+see [`CLAUDE.md`](CLAUDE.md) facts 5a–5c for the gory details.
 
-- **Kibana dashboard** → http://localhost:5601 → *Dashboards* → **Claude Code · Overview** (13 panels, 10 s refresh).
-- **Discover** → pick *Claude Code · Logs (events)* / *Metrics* / *Traces (beta)*.
-- **Jaeger waterfall** → http://localhost:16686.
+### Logs in Kibana Discover
 
-The `kibana-setup` one-shot registers the traces template, attribute mappings
-(`claude-code-attributes@mappings`), the JSON-parse ingest pipeline, and
-imports the dashboard. Without it, `tool_input.command` queries return zero
-and `sum(duration_ms)` errors — context in [`CLAUDE.md`](CLAUDE.md) facts 5a–5c.
+![Discover · Logs](docs/images/discover-logs.png)
+
+10 events, all from one session. `success` renders as a real boolean,
+`duration_ms` / `cost_usd_micros` / `input_tokens` / `output_tokens` as real
+numbers — sum and avg in Lens just work, no scripted-field workarounds needed.
+
+### Metrics in Kibana Discover
+
+![Discover · Metrics](docs/images/discover-metrics.png)
+
+Token usage broken down by `attributes.model` × `attributes.type`
+(input / output / cacheRead / cacheCreation), in the same documents as the USD
+cost samples. Each row is a `(metric, dimensions, value)` tuple ready for
+Lens visualizations.
+
+### Traces — Kibana for query, Jaeger for waterfall
+
+![Discover · Traces](docs/images/discover-traces.png)
+
+The 9 spans of the prompt trace, listed in Discover with `name`, `kind`,
+`attributes.tool_name`, and rendered `duration`. Good for "find all traces
+where the tool took >1s"-style aggregation queries.
+
+![Jaeger waterfall](docs/images/jaeger-trace.png)
+
+The same trace in Jaeger — 10.17 s wall-clock, two `llm_request` spans run in
+parallel and dominate; the actual Bash tool execution is ~30 ms in the middle.
+Click any span to inspect its attributes (model, tokens, tool_name, ...).
+
+---
 
 ## Path B — Grafana LGTM
+
+![Grafana architecture](docs/images/explainer-grafana-stack.png)
+
+### Run it
 
 ```bash
 cd grafana-stack
 docker compose up -d
-source claude-code-grafana.env        # OTLP → :14317 (vs :4317 for the ES stack)
-claude -p "what is OTel?"
+source claude-code-grafana.env  # → OTLP to localhost:14317 (offset from ES stack)
+claude -p 'Run the bash command "echo hello-from-readme" and confirm what it printed.'
 ```
 
-Then open Grafana at http://localhost:13000 → *Explore* → switch between
-Tempo / Loki / Prometheus. Datasource correlations (log → trace, metric →
-log) are pre-wired in provisioning.
+The Grafana collector includes a `deltatocumulative` processor on the metrics
+pipeline because Prometheus's OTLP receiver rejects Claude Code's native DELTA
+metrics — see [`grafana-stack/README.md`](grafana-stack/README.md) for the
+full processor + datasource wiring.
 
-Details, including the `deltatocumulative` processor required because Prometheus
-rejects Claude Code's DELTA metrics, in [`grafana-stack/README.md`](grafana-stack/README.md).
+### Logs in Loki
+
+![Loki · Logs](docs/images/grafana-logs.png)
+
+Same 10 events, queried by LogQL with the JSON parser:
+`{service_name="claude-code"} | json | session_id="..."`. *Common labels* at
+the top are resource attributes Loki auto-promoted — `service_name`,
+`user_email`, `session_id`, `prompt_id` — making label-based filtering free.
+Per-event details (`tool_name`, `success`, ...) come through as structured
+metadata, queryable but not promoted.
+
+### Metrics in Prometheus
+
+![Prometheus · Metrics](docs/images/grafana-metrics.png)
+
+Token usage by type. Note the OTel-to-Prom name mangling:
+`claude_code.token.usage` (tokens) → `claude_code_token_usage_tokens_total`
+(dots to underscores, unit + `_total` suffix appended). Same data shape as
+Kibana metrics, just a different query language.
+
+### Traces in Tempo
+
+![Tempo · Traces](docs/images/grafana-traces.png)
+
+Same span tree in Tempo. Notice the small **log icon** next to every span —
+one click and Grafana opens a Loki split view with a query scoped to that
+span's time window and trace ID. This trace → log → metric correlation,
+pre-wired in provisioning, is the Grafana stack's signature feature.
+
+---
+
+## Side-by-side
+
+| Signal | ES stack | Grafana stack |
+|---|---|---|
+| **Logs** | Kibana Discover, KQL, full-text search across log content | Loki, LogQL, label-indexed — record attributes as structured metadata |
+| **Metrics** | Discover or Lens panels over `metrics-claude_code.otel-default` | Prometheus, names flattened (`*_tokens_total`), native PromQL |
+| **Traces** | Discover for spans + queries, Jaeger as a **separate** waterfall UI | Tempo waterfall directly in Grafana, one-click split-view to Loki |
+| **Cross-signal** | Manual — copy `trace_id` to Jaeger, copy `session.id` into Discover | Pre-wired deep links between datasources |
+| **Strength** | Full-text grep, mature aggregations, drops in next to existing Elastic | Single UI, cheaper object-store backend, cross-signal navigation |
+| **Trade-off** | Two UIs (Kibana + Jaeger), Lucene-shaped query languages | Loki full-text is label-bounded, Prometheus rejects DELTA without the processor |
+
+Both consume the **same** OTLP from Claude Code — only the env file
+(`claude-code.env` vs `grafana-stack/claude-code-grafana.env`) and the
+receiver port change.
 
 ---
 
 ## Caveats
 
 - **Demo, not production.** Single-node Elasticsearch with `xpack.security`
-  off, no TLS, in-memory Jaeger. For a team rollout (auth, multi-tenancy,
-  ILM, MDM-managed env) see [`docs/admin-rollout-guide.md`](docs/admin-rollout-guide.md).
+  off, no TLS, in-memory Jaeger. For team rollout (auth, multi-tenancy, ILM,
+  MDM-managed env) see
+  [`docs/admin-rollout-guide.md`](docs/admin-rollout-guide.md).
 - **Privacy.** `claude-code.env` opts into `OTEL_LOG_USER_PROMPTS=1` and
   `OTEL_LOG_TOOL_DETAILS=1` — prompts, tool commands, and tool args are
   captured verbatim. Comment those two lines out if your policy says no.
@@ -107,8 +200,9 @@ rejects Claude Code's DELTA metrics, in [`grafana-stack/README.md`](grafana-stac
 
 The collector upserts `data_stream.dataset=claude_code` on resource **and**
 record attributes for all three pipelines, so every signal lands in
-`*-claude_code.otel-*` regardless of which event Claude Code natively
-brands. See [`CLAUDE.md`](CLAUDE.md) for the rest of the hard-won facts.
+`*-claude_code.otel-*` regardless of which event Claude Code natively brands.
+See [`CLAUDE.md`](CLAUDE.md) for the rest of the hard-won facts (broken
+collector versions, Loki label promotion, Prometheus DELTA/CUMULATIVE, etc.).
 
 ## Reference
 
@@ -118,6 +212,6 @@ brands. See [`CLAUDE.md`](CLAUDE.md) for the rest of the hard-won facts.
   from demo to a team plan.
 - [`docs/es-upgrade-8.14-to-8.17.md`](docs/es-upgrade-8.14-to-8.17.md) —
   upgrading older Elasticsearch.
-- `observability-explainer/` — React Flow app diagramming both stacks side
-  by side, with a tab toggle. `docker compose up -d` already starts it at
-  http://localhost:5173.
+- `observability-explainer/` — React Flow app that renders the two
+  architecture diagrams interactively (already started by
+  `docker compose up`, at http://localhost:5173).
