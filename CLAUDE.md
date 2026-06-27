@@ -88,19 +88,21 @@ Claude Code ──:14317──▶ OTel Coll ─┼─▶ Loki        (logs)    �
 
 ## How to run
 
-ES stack (default):
+Both stacks are peers — pick one or run both (offset ports, no conflict).
+
+ES stack:
 ```bash
 cd es-stack && docker compose up -d   # start the stack
 source claude-code.env                # in the shell that runs claude
-claude -p "what is OTel?"           # generate telemetry
+claude -p "what is OTel?"             # generate telemetry
 # → http://localhost:5601 → Dashboards → "Claude Code · Overview"
 # → http://localhost:16686 for Jaeger waterfall
 ```
 
-Grafana stack (alternative, can run alongside):
+Grafana stack:
 ```bash
 cd grafana-stack && docker compose up -d
-source claude-code-grafana.env      # ships to :14317 instead of :4317
+source claude-code-grafana.env        # ships to :14317 instead of :4317
 claude -p "what is OTel?"
 # → http://localhost:13000 → Explore → Tempo / Loki / Prometheus
 ```
@@ -133,7 +135,7 @@ docker run --rm otel/opentelemetry-collector-contrib:<tag> --version
 
 ## When changing things
 
-- **Editing `es-stack/otel/collector-config.yaml`** or `grafana-stack/otel/collector-config.yaml` → `docker compose restart otel-collector` in that dir (volume-mounted, no rebuild needed).
+- **Editing `es-stack/otel/collector-config.yaml`** or `grafana-stack/otel/collector-config.yaml` → `docker compose -f <stack>/docker-compose.yml restart otel-collector` (volume-mounted, no rebuild needed).
 - **Editing `es-stack/claude-code.env`** / `grafana-stack/claude-code-grafana.env` → re-`source` it before the next `claude` invocation.
 - **Editing the dashboard** → regenerate via `python3 es-stack/kibana/build-dashboard.py`, then `docker compose -f es-stack/docker-compose.yml run --rm kibana-setup` to re-import.
 - **Editing `es-stack/docker-compose.yml`** → `docker compose -f es-stack/docker-compose.yml up -d` to recreate changed services.
